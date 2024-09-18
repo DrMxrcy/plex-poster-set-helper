@@ -17,6 +17,7 @@ def plex_setup():
             token = config["token"]
             tv_library = config["tv_library"]
             movie_library = config["movie_library"]
+            create_collections = config.get("create_collections", False)
         except:
             sys.exit("Error with config.json file. Please consult the readme.md.") 
         try:
@@ -47,7 +48,7 @@ def plex_setup():
                 movies.append(plex_movie)
             except plexapi.exceptions.NotFound:
                 sys.exit(f'Movie library named "{movie_lib}" not found. Please check the "movie_library" in config.json, and consult the readme.md.')
-        return tv, movies
+        return tv, movies, create_collections  # Add this line
     else:
         sys.exit("No config.json file found. Please consult the readme.md.")   
 
@@ -98,6 +99,8 @@ def find_in_library(library, poster):
     items = []
     for lib in library:
         try:
+            #print(f"Searching in library: {lib.title} for poster: {poster['title']} ({poster.get('year', 'Unknown Year')})")
+
             if poster["year"] is not None:
                 library_item = lib.get(poster["title"], year=poster["year"])
             else:
@@ -105,8 +108,8 @@ def find_in_library(library, poster):
             
             if library_item:
                 items.append(library_item)
-        except:
-            pass
+        except Exception as e:
+            print(f"Error searching for {poster['title']} in {lib.title}: {e}")
     
     if items:
         return items
@@ -193,27 +196,49 @@ def upload_movie_poster(poster, movies):
         print(f'{poster["title"]} not found in any library.')
 
 
-def upload_collection_poster(poster, movies):
+def upload_collection_poster(poster, movies, create_collections):  # Add create_collections parameter
+    print(f"Attempting to upload collection poster for: {poster['title']}")
+
     collection_items = find_collection(movies, poster)
     if collection_items:
         for collection in collection_items:
             try:
                 collection.uploadPoster(poster["url"])
                 print(f'Uploaded art for {poster["title"]} in {collection.librarySectionTitle} library.')
-                if poster["source"] == "posterdb":
+                if poster["source"] == "mediux":
                     time.sleep(6)  # too many requests prevention
-            except:
-                print(f'Unable to upload art for {poster["title"]} in {collection.librarySectionTitle} library.')
+            except Exception as e:
+                print(f'Unable to upload art for {poster["title"]} in {collection.librarySectionTitle} library. Error: {e}')
+    elif create_collections: 
+        for movie_lib in movies:
+            try:
+                items_to_add = []
+                for title in poster.get("movie_titles", []):
+                    movie_poster = {"title": title, "year": None}  
+                    found_items = find_in_library([movie_lib], movie_poster)
+                    if found_items:
+                        items_to_add.extend(found_items)
+
+                if not items_to_add:
+                    print(f'No items found to add to the new collection {poster["title"]} in {movie_lib.title} library.')
+                    continue
+
+                new_collection = movie_lib.createCollection(poster["title"], items=items_to_add)
+                new_collection.uploadPoster(poster["url"])
+                print(f'Created and uploaded art for new collection {poster["title"]} in {movie_lib.title} library.')
+                if poster["source"] == "mediux":
+                    time.sleep(6)  # too many requests prevention
+            except Exception as e:
+                print(f'Unable to create and upload art for new collection {poster["title"]} in {movie_lib.title} library. Error: {e}')
     else:
-        print(f'{poster["title"]} collection not found in any library.')
+        print(f'Collection creation is disabled. Skipping creation of new collection {poster["title"]}.')
 
 
-
-def set_posters(url, tv, movies):
+def set_posters(url, tv, movies, create_collections):  # Add create_collections parameter
     movieposters, showposters, collectionposters = scrape(url)
 
     for poster in collectionposters:
-        upload_collection_poster(poster, movies)
+        upload_collection_poster(poster, movies, create_collections)  
         
     for poster in movieposters:
         upload_movie_poster(poster, movies)
@@ -396,6 +421,8 @@ def scrape_mediux(soup):
                     year = int(movie_data["release_date"][:4])
             elif data["collection_id"]:
                 title = data_dict["set"]["collection"]["collection_name"]
+                # Add movie titles to the collection poster
+                movie_titles = [movie["title"] for movie in data_dict["set"]["collection"]["movies"]]
             
         image_stub = data["id"]
         poster_url = f"{base_url}{image_stub}{quality_suffix}"
@@ -420,6 +447,7 @@ def scrape_mediux(soup):
                 collectionposter["title"] = title
                 collectionposter["url"] = poster_url
                 collectionposter["source"] = "mediux"
+                collectionposter["movie_titles"] = movie_titles  # Add movie titles to the collection poster
                 collectionposters.append(collectionposter)
             
             else:
@@ -476,7 +504,7 @@ def parse_urls(file_path):
                 if "/user/" in url:
                     scrape_entire_user(url)
                 else:  
-                    set_posters(url, tv, movies)
+                    set_posters(url, tv, movies, create_collections)  
     except FileNotFoundError:
         print("File not found. Please enter a valid file path.")
     
@@ -491,12 +519,12 @@ def scrape_entire_user(url):
     for page in range(pages):
         print(f"Scraping page {page+1}.")
         page_url = f"{url}?section=uploads&page={page+1}"
-        set_posters(page_url, tv, movies)
+        set_posters(page_url, tv, movies, create_collections)  
 
 if __name__ == "__main__":
     # Set stdout encoding to UTF-8
     sys.stdout.reconfigure(encoding='utf-8')
-    tv, movies = plex_setup()
+    tv, movies, create_collections = plex_setup()
     
     # arguments were provided
     if len(sys.argv) > 1:
@@ -512,7 +540,7 @@ if __name__ == "__main__":
         elif "/user/" in command:
             scrape_entire_user(command)
         else:
-            set_posters(command, tv, movies)
+            set_posters(command, tv, movies, create_collections)  
             
     # user input
     else:
@@ -528,4 +556,4 @@ if __name__ == "__main__":
             elif "/user/" in user_input.lower():
                 scrape_entire_user(user_input)
             else:
-                set_posters(user_input, tv, movies)
+                set_posters(user_input, tv, movies, create_collections)  
